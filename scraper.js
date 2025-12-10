@@ -293,10 +293,11 @@ async function extractFromArticle(page) {
         // Skip very small images (likely icons/avatars) - but be more lenient
         if ((o.w || 0) < 150 && (o.h || 0) < 150) return false;
 
-        // Look for post content indicators (more inclusive)
-        // Prioritize images in the main post container
-        const isPostContent =
-          o.isInMainPost || // If in main post container, include it
+        // If we've passed all the exclusion filters (not a comment, not a profile pic, has valid src, from LinkedIn CDN, reasonably sized)
+        // then include it - this is the main post image
+        // Additional checks for post content indicators (for extra confidence)
+        const hasPostContentIndicators =
+          o.isInMainPost ||
           o.classes.includes("w-full") ||
           o.classes.includes("object-cover") ||
           o.classes.includes("feed-shared-image") ||
@@ -310,11 +311,14 @@ async function extractFromArticle(page) {
           o.alt.includes("PowerPoint") ||
           o.alt.includes("image") ||
           o.alt.includes("screenshot") ||
-          // If it's reasonably large and not in a profile container, include it
           (o.w || 0) >= 300 ||
           (o.h || 0) >= 300;
 
-        return isPostContent;
+        // Include if it has post content indicators OR if it's reasonably large (likely main post content)
+        // Since we've already excluded comments and profile pics, anything left that's reasonably sized is likely the main post image
+        return (
+          hasPostContentIndicators || (o.w || 0) >= 200 || (o.h || 0) >= 200
+        );
       })
       .map((o) => o.src);
 
