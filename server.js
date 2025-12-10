@@ -282,6 +282,42 @@ async function extractFromArticle(page) {
       });
     }
     
+    // Show ALL images from media.licdn.com (even if they don't have feedshare)
+    const allMediaImages = imageResult.debug.allImages.filter(img => 
+      img.hasMedia && img.width > 0 && img.height > 0
+    );
+    
+    if (allMediaImages.length > 0) {
+      console.error(`[SERVER] All media.licdn.com images (${allMediaImages.length}):`);
+      allMediaImages.forEach((img, idx) => {
+        const hasFeedshare = img.src.includes("feedshare");
+        const isProfile = img.src.includes("profile-displayphoto");
+        const isComment = img.src.includes("comment-image");
+        const isCompany = img.src.includes("company-logo");
+        const isBackground = img.src.includes("displaybackgroundimage");
+        const isLarge = img.width > 200 && img.height > 200;
+        console.error(`  ${idx + 1}. [${img.idx}] ${img.width}x${img.height} - feedshare:${hasFeedshare} profile:${isProfile} comment:${isComment} company:${isCompany} bg:${isBackground} large:${isLarge}`);
+        console.error(`     ${img.src.substring(0, 120)}...`);
+      });
+    }
+    
+    // Show large images that might be post images (even without feedshare)
+    const largeImages = imageResult.debug.allImages.filter(img => 
+      img.width > 400 && img.height > 200 && 
+      !img.src.includes("profile-displayphoto") &&
+      !img.src.includes("comment-image") &&
+      !img.src.includes("company-logo") &&
+      !img.src.includes("displaybackgroundimage")
+    );
+    
+    if (largeImages.length > 0) {
+      console.error(`[SERVER] Large potential post images (${largeImages.length}):`);
+      largeImages.forEach((img, idx) => {
+        console.error(`  ${idx + 1}. [${img.idx}] ${img.width}x${img.height} - ${img.src.substring(0, 120)}...`);
+        console.error(`     hasFeedshare: ${img.hasFeedshare}, hasMedia: ${img.hasMedia}, hasLicdn: ${img.hasLicdn}`);
+      });
+    }
+    
     if (imageResult.debug.added.length > 0) {
       console.error(`[SERVER] Added images:`, imageResult.debug.added);
     }
