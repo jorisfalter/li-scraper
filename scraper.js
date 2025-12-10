@@ -197,136 +197,215 @@ async function extractFromArticle(page) {
     }
   }
 
-  // IMAGES - Target actual post content images, not profile pics
-  const images = await page.$$eval("article img", (imgs) => {
-    const postImages = imgs
-      .map((i) => {
-        // Get src, data-src (for lazy loading), or srcset
-        let src = i.getAttribute("src") || i.getAttribute("data-src") || "";
+  // IMAGES - Simple approach: filter by URL patterns and size
+  const imageResult = await page.evaluate(() => {
+    const images = [];
+    const debug = {
+      totalImages: 0,
+      licdnImages: 0,
+      feedshareImages: 0,
+      allImages: [], // Store ALL images for debugging
+      filteredOut: [],
+      added: []
+    };
+    
+    const mainSection = document.querySelector("main");
 
-        // If srcset exists, extract the first URL
-        const srcset = i.getAttribute("srcset");
-        if (srcset && !src) {
-          const firstSrc = srcset.split(",")[0]?.trim().split(" ")[0];
-          if (firstSrc) src = firstSrc;
+    if (!mainSection) {
+      return { images: [], debug: { ...debug, error: "No main section found" } };
+    }
+
+    const allImages = mainSection.querySelectorAll("img");
+    debug.totalImages = allImages.length;
+
+    allImages.forEach((img, idx) => {
+      // Get all possible sources
+      const src = img.src || "";
+      const dataSrc = img.getAttribute("data-src") || "";
+      const dataLazySrc = img.getAttribute("data-lazy-src") || "";
+      const srcset = img.getAttribute("srcset") || "";
+      
+      // Try to get the best source URL
+      let bestSrc = src || dataSrc || dataLazySrc || "";
+      
+      // Handle srcset if no other source
+      if (!bestSrc && srcset) {
+        bestSrc = srcset.split(",")[0]?.trim().split(" ")[0];
+      }
+
+      const alt = img.alt || "";
+      const className = img.className || "";
+      const parentTag = img.parentElement?.tagName || "";
+      const parentClass = img.parentElement?.className || "";
+      
+      // Try to get actual dimensions - naturalWidth/Height are more reliable
+      let width = img.naturalWidth || 0;
+      let height = img.naturalHeight || 0;
+      
+      // If natural dimensions not available, try width/height attributes
+      if (width === 0) width = img.width || 0;
+      if (height === 0) height = img.height || 0;
+      
+      // If still 0, try to get from computed style
+      if (width === 0 || height === 0) {
+        const style = window.getComputedStyle(img);
+        const styleWidth = parseInt(style.width, 10);
+        const styleHeight = parseInt(style.height, 10);
+        if (styleWidth > 0) width = styleWidth;
+        if (styleHeight > 0) height = styleHeight;
+      }
+
+      // Store ALL image info for debugging
+      const imageInfo = {
+        idx: idx + 1,
+        src: bestSrc.substring(0, 150),
+        dataSrc: dataSrc.substring(0, 150),
+        dataLazySrc: dataLazySrc.substring(0, 150),
+        srcset: srcset.substring(0, 100),
+        width,
+        height,
+        alt: alt.substring(0, 50),
+        className: className.substring(0, 100),
+        parentTag,
+        parentClass: parentClass.substring(0, 100),
+        hasFeedshare: bestSrc.includes("feedshare"),
+        hasMedia: bestSrc.includes("media.licdn.com"),
+        hasLicdn: bestSrc.includes("licdn.com")
+      };
+      
+      debug.allImages.push(imageInfo);
+
+      // Check if from LinkedIn CDN
+      if (bestSrc && bestSrc.includes("licdn.com")) {
+        debug.licdnImages++;
+        
+        // Check if from media.licdn.com (post images) or has feedshare
+        if (bestSrc.includes("media.licdn.com") || bestSrc.includes("feedshare")) {
+          debug.feedshareImages++;
         }
+      }
 
-        // Check if image is in a comment section by traversing up the DOM
-        let isInComment = false;
-        let isInMainPost = false;
-        let current = i.parentElement;
-        let depth = 0;
-        while (current && depth < 10) {
-          const className = current.className || "";
-          const id = current.id || "";
-
-          // Check for comment-related classes/IDs
-          if (
-            className.includes("comment") ||
-            className.includes("comments") ||
-            className.includes("commentary") ||
-            className.includes("feed-shared-commentary") ||
-            className.includes("comments-container") ||
-            className.includes("social-actions") ||
-            className.includes("comments-list") ||
-            id.includes("comment")
-          ) {
-            isInComment = true;
-            break;
-          }
-
-          // Check if we're in the main post container
-          if (
-            className.includes("feed-shared-update-v2") ||
-            className.includes("feed-shared-update") ||
-            className.includes("main-feed-activity-card") ||
-            className.includes("feed-shared-image")
-          ) {
-            isInMainPost = true;
-          }
-
-          current = current.parentElement;
-          depth++;
+      // Filter criteria:
+      const hasFeedshare = bestSrc.includes("feedshare");
+      const isFromMedia = bestSrc.includes("media.licdn.com");
+      const isSmallComment = bestSrc.includes("comment-image") && height < 300;
+      
+      if (
+        bestSrc &&
+        bestSrc.includes("licdn.com") &&
+        (isFromMedia || hasFeedshare) &&
+        !bestSrc.includes("profile-displayphoto") &&
+        !bestSrc.includes("displaybackgroundimage") &&
+        !bestSrc.includes("/sc/h/") &&
+        !bestSrc.includes("/aero-v1/sc/h/") &&
+        !(isSmallComment && !hasFeedshare) &&
+        width > 200
+      ) {
+        images.push(bestSrc);
+        debug.added.push({ src: bestSrc.substring(0, 150), width, height });
+      } else if (bestSrc && bestSrc.includes("licdn.com")) {
+        // Debug why image was filtered out
+        const reasons = [];
+        if (!bestSrc.includes("media.licdn.com") && !bestSrc.includes("feedshare")) reasons.push("not media.licdn.com or feedshare");
+        if (bestSrc.includes("profile-displayphoto")) reasons.push("profile pic");
+        if (bestSrc.includes("displaybackgroundimage")) reasons.push("background");
+        if (bestSrc.includes("/sc/h/") || bestSrc.includes("/aero-v1/sc/h/")) reasons.push("icon");
+        if (bestSrc.includes("comment-image") && height < 300) reasons.push("small comment");
+        if (width <= 200) reasons.push(`too small (${width}px)`);
+        if (reasons.length > 0) {
+          debug.filteredOut.push({ 
+            reason: reasons.join(", "), 
+            src: bestSrc.substring(0, 120),
+            width,
+            height,
+            idx: idx + 1
+          });
         }
+      }
+    });
 
-        return {
-          src: src,
-          w: Number(i.getAttribute("width") || i.naturalWidth || 0),
-          h: Number(i.getAttribute("height") || i.naturalHeight || 0),
-          classes: i.className || "",
-          alt: i.getAttribute("alt") || "",
-          parent: i.parentElement?.className || "",
-          parentTag: i.parentElement?.tagName || "",
-          isInComment: isInComment,
-          isInMainPost: isInMainPost,
-        };
-      })
-      .filter((o) => {
-        // Exclude comment images first
-        if (o.isInComment) return false;
-        // Must have a valid src
-        if (!o.src) return false;
-
-        // Must be from LinkedIn CDN (check multiple possible domains)
-        const isLinkedInCDN =
-          o.src.startsWith("https://media.licdn.com/") ||
-          o.src.startsWith("https://static.licdn.com/") ||
-          o.src.includes("licdn.com");
-
-        if (!isLinkedInCDN) return false;
-
-        // Skip profile pictures (usually small and in specific containers)
-        if (o.classes.includes("profile") || o.classes.includes("avatar"))
-          return false;
-        if (o.parent.includes("profile") || o.parent.includes("avatar"))
-          return false;
-
-        // Skip images in author/actor containers (profile pics)
-        const isInAuthorContainer =
-          o.parent.includes("actor") ||
-          o.parent.includes("author") ||
-          o.parent.includes("feed-shared-actor");
-        if (isInAuthorContainer && (o.w || 0) < 100 && (o.h || 0) < 100) {
-          return false;
-        }
-
-        // Skip very small images (likely icons/avatars) - but be more lenient
-        if ((o.w || 0) < 150 && (o.h || 0) < 150) return false;
-
-        // If we've passed all the exclusion filters (not a comment, not a profile pic, has valid src, from LinkedIn CDN, reasonably sized)
-        // then include it - this is the main post image
-        // Additional checks for post content indicators (for extra confidence)
-        const hasPostContentIndicators =
-          o.isInMainPost ||
-          o.classes.includes("w-full") ||
-          o.classes.includes("object-cover") ||
-          o.classes.includes("feed-shared-image") ||
-          o.parent.includes("feed-images") ||
-          o.parent.includes("feed-shared-image") ||
-          o.parent.includes("media") ||
-          o.parent.includes("image") ||
-          o.parentTag === "FIGURE" ||
-          o.alt.includes("graphical") ||
-          o.alt.includes("application") ||
-          o.alt.includes("PowerPoint") ||
-          o.alt.includes("image") ||
-          o.alt.includes("screenshot") ||
-          (o.w || 0) >= 300 ||
-          (o.h || 0) >= 300;
-
-        // Include if it has post content indicators OR if it's reasonably large (likely main post content)
-        // Since we've already excluded comments and profile pics, anything left that's reasonably sized is likely the main post image
-        return (
-          hasPostContentIndicators || (o.w || 0) >= 200 || (o.h || 0) >= 200
-        );
-      })
-      .map((o) => o.src);
-
-    console.error(
-      `DEBUG: Found ${imgs.length} total images, ${postImages.length} post images`
-    );
-    return postImages;
+    return { images: [...new Set(images)], debug };
   });
+
+  const images = imageResult.images;
+  
+  // Log extensive debug info
+  console.error(`\n=== IMAGE EXTRACTION DEBUG ===`);
+  console.error(`Total images in main: ${imageResult.debug.totalImages}`);
+  console.error(`LinkedIn CDN images: ${imageResult.debug.licdnImages}`);
+  console.error(`Images with 'feedshare' or media.licdn.com: ${imageResult.debug.feedshareImages}`);
+  console.error(`Images added: ${imageResult.debug.added.length}\n`);
+  
+  // Show ALL images from media.licdn.com or with feedshare
+  const relevantImages = imageResult.debug.allImages.filter(img => 
+    (img.hasMedia || img.hasFeedshare) && img.hasLicdn
+  );
+  
+  if (relevantImages.length > 0) {
+    console.error(`=== ALL RELEVANT IMAGES (media.licdn.com or feedshare) ===`);
+    relevantImages.forEach((img, idx) => {
+      console.error(`\nImage #${img.idx}:`);
+      console.error(`  src: ${img.src}`);
+      if (img.dataSrc) console.error(`  data-src: ${img.dataSrc}`);
+      if (img.dataLazySrc) console.error(`  data-lazy-src: ${img.dataLazySrc}`);
+      if (img.srcset) console.error(`  srcset: ${img.srcset}`);
+      console.error(`  Size: ${img.width}x${img.height}`);
+      console.error(`  Alt: ${img.alt || '(none)'}`);
+      console.error(`  Class: ${img.className || '(none)'}`);
+      console.error(`  Parent: <${img.parentTag}> ${img.parentClass.substring(0, 80)}`);
+      console.error(`  Has feedshare: ${img.hasFeedshare}`);
+      console.error(`  Has media.licdn.com: ${img.hasMedia}`);
+      
+      // Check why it's filtered
+      const reasons = [];
+      if (img.src.includes("profile-displayphoto")) reasons.push("profile pic");
+      if (img.src.includes("displaybackgroundimage")) reasons.push("background");
+      if (img.src.includes("/sc/h/") || img.src.includes("/aero-v1/sc/h/")) reasons.push("icon");
+      if (img.src.includes("comment-image") && img.height < 300) reasons.push("small comment");
+      if (img.width <= 200) reasons.push(`too small (${img.width}px)`);
+      if (reasons.length > 0) {
+        console.error(`  ❌ FILTERED: ${reasons.join(", ")}`);
+      } else {
+        console.error(`  ✅ WOULD PASS FILTER`);
+      }
+    });
+  }
+  
+  // Show all filtered out images
+  if (imageResult.debug.filteredOut.length > 0) {
+    console.error(`\n=== FILTERED OUT IMAGES ===`);
+    imageResult.debug.filteredOut.forEach((item, idx) => {
+      console.error(`${idx + 1}. [${item.idx}] ${item.reason}`);
+      console.error(`   ${item.src}... (${item.width}x${item.height})`);
+    });
+  }
+  
+  // Show added images
+  if (imageResult.debug.added.length > 0) {
+    console.error(`\n=== ADDED IMAGES ===`);
+    imageResult.debug.added.forEach((item, idx) => {
+      console.error(`${idx + 1}. ${item.src}... (${item.width}x${item.height})`);
+    });
+  }
+  
+  // If no images found, show ALL images for debugging
+  if (imageResult.debug.added.length === 0 && imageResult.debug.allImages.length > 0) {
+    console.error(`\n=== ALL IMAGES (for debugging) ===`);
+    imageResult.debug.allImages.slice(0, 10).forEach((img) => {
+      console.error(`\nImage #${img.idx}:`);
+      console.error(`  src: ${img.src || '(empty)'}`);
+      if (img.dataSrc) console.error(`  data-src: ${img.dataSrc}`);
+      console.error(`  Size: ${img.width}x${img.height}`);
+      console.error(`  Has licdn.com: ${img.hasLicdn}`);
+      console.error(`  Has feedshare: ${img.hasFeedshare}`);
+      console.error(`  Has media.licdn.com: ${img.hasMedia}`);
+    });
+    if (imageResult.debug.allImages.length > 10) {
+      console.error(`\n... and ${imageResult.debug.allImages.length - 10} more images`);
+    }
+  }
+  
+  console.error(`\n=== END DEBUG ===\n`);
 
   // VIDEOS
   // 1) Parse data-sources JSON on <video>
@@ -424,14 +503,35 @@ async function extractFromArticle(page) {
 
   // Wait for content to appear
   try {
-    await page.waitForSelector("article", { timeout: 10000 });
+    await page.waitForSelector("main", { timeout: 10000 });
   } catch (error) {
     console.error(
-      "No article found - the post might require authentication or be unavailable"
+      "No main content found - the post might require authentication"
     );
   }
 
   await maybeExpand(page);
+
+  // Scroll multiple times to trigger lazy-loaded images
+  await page.evaluate(() => {
+    window.scrollTo(0, 0);
+  });
+  await page.waitForTimeout(1000);
+  
+  await page.evaluate(() => {
+    window.scrollTo(0, document.body.scrollHeight / 3);
+  });
+  await page.waitForTimeout(1000);
+  
+  await page.evaluate(() => {
+    window.scrollTo(0, document.body.scrollHeight / 2);
+  });
+  await page.waitForTimeout(2000); // Wait for images to load
+  
+  // Try to wait for images to load
+  try {
+    await page.waitForLoadState("networkidle", { timeout: 5000 }).catch(() => {});
+  } catch (e) {}
 
   // Extract
   const result = await extractFromArticle(page);

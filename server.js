@@ -133,133 +133,73 @@ async function extractFromArticle(page) {
     }
   }
 
-  // IMAGES - Target actual post content images, not profile pics
-  const images = await page.$$eval("article img", (imgs) => {
-    const postImages = imgs
-      .map((i) => {
-        // Get src, data-src (for lazy loading), or srcset
-        let src = i.getAttribute("src") || i.getAttribute("data-src") || "";
+  // IMAGES - Simple approach: filter by URL patterns and size (working version)
+  const imageResult = await page.evaluate(() => {
+    const images = [];
+    const mainSection = document.querySelector("main");
 
-        // If srcset exists, extract the first URL
-        const srcset = i.getAttribute("srcset");
-        if (srcset && !src) {
-          const firstSrc = srcset.split(",")[0]?.trim().split(" ")[0];
-          if (firstSrc) src = firstSrc;
-        }
+    if (!mainSection) {
+      return { images: [] };
+    }
 
-        // Check if image is in a comment section by traversing up the DOM
-        let isInComment = false;
-        let isInMainPost = false;
-        let current = i.parentElement;
-        let depth = 0;
-        while (current && depth < 10) {
-          const className = current.className || "";
-          const id = current.id || "";
+    const allImages = mainSection.querySelectorAll("img");
 
-          // Check for comment-related classes/IDs
-          if (
-            className.includes("comment") ||
-            className.includes("comments") ||
-            className.includes("commentary") ||
-            className.includes("feed-shared-commentary") ||
-            className.includes("comments-container") ||
-            className.includes("social-actions") ||
-            className.includes("comments-list") ||
-            id.includes("comment")
-          ) {
-            isInComment = true;
-            break;
-          }
+    allImages.forEach((img) => {
+      // Get all possible sources
+      const src = img.src || "";
+      const dataSrc = img.getAttribute("data-src") || "";
+      const dataLazySrc = img.getAttribute("data-lazy-src") || "";
+      const srcset = img.getAttribute("srcset") || "";
+      
+      // Try to get the best source URL
+      let bestSrc = src || dataSrc || dataLazySrc || "";
+      
+      // Handle srcset if no other source
+      if (!bestSrc && srcset) {
+        bestSrc = srcset.split(",")[0]?.trim().split(" ")[0];
+      }
 
-          // Check if we're in the main post container
-          if (
-            className.includes("feed-shared-update-v2") ||
-            className.includes("feed-shared-update") ||
-            className.includes("main-feed-activity-card") ||
-            className.includes("feed-shared-image")
-          ) {
-            isInMainPost = true;
-          }
+      // Try to get actual dimensions
+      let width = img.naturalWidth || 0;
+      let height = img.naturalHeight || 0;
+      
+      // If natural dimensions not available, try width/height attributes
+      if (width === 0) width = img.width || 0;
+      if (height === 0) height = img.height || 0;
+      
+      // If still 0, try to get from computed style
+      if (width === 0 || height === 0) {
+        const style = window.getComputedStyle(img);
+        const styleWidth = parseInt(style.width, 10);
+        const styleHeight = parseInt(style.height, 10);
+        if (styleWidth > 0) width = styleWidth;
+        if (styleHeight > 0) height = styleHeight;
+      }
 
-          current = current.parentElement;
-          depth++;
-        }
+      // Filter criteria:
+      const hasFeedshare = bestSrc.includes("feedshare");
+      const isFromMedia = bestSrc.includes("media.licdn.com");
+      const isSmallComment = bestSrc.includes("comment-image") && height < 300;
+      
+      if (
+        bestSrc &&
+        bestSrc.includes("licdn.com") &&
+        (isFromMedia || hasFeedshare) &&
+        !bestSrc.includes("profile-displayphoto") &&
+        !bestSrc.includes("displaybackgroundimage") &&
+        !bestSrc.includes("/sc/h/") &&
+        !bestSrc.includes("/aero-v1/sc/h/") &&
+        !(isSmallComment && !hasFeedshare) &&
+        width > 200
+      ) {
+        images.push(bestSrc);
+      }
+    });
 
-        return {
-          src: src,
-          w: Number(i.getAttribute("width") || i.naturalWidth || 0),
-          h: Number(i.getAttribute("height") || i.naturalHeight || 0),
-          classes: i.className || "",
-          alt: i.getAttribute("alt") || "",
-          parent: i.parentElement?.className || "",
-          parentTag: i.parentElement?.tagName || "",
-          isInComment: isInComment,
-          isInMainPost: isInMainPost,
-        };
-      })
-      .filter((o) => {
-        // Exclude comment images first
-        if (o.isInComment) return false;
-        // Must have a valid src
-        if (!o.src) return false;
-
-        // Must be from LinkedIn CDN (check multiple possible domains)
-        const isLinkedInCDN =
-          o.src.startsWith("https://media.licdn.com/") ||
-          o.src.startsWith("https://static.licdn.com/") ||
-          o.src.includes("licdn.com");
-
-        if (!isLinkedInCDN) return false;
-
-        // Skip profile pictures (usually small and in specific containers)
-        if (o.classes.includes("profile") || o.classes.includes("avatar"))
-          return false;
-        if (o.parent.includes("profile") || o.parent.includes("avatar"))
-          return false;
-
-        // Skip images in author/actor containers (profile pics)
-        const isInAuthorContainer =
-          o.parent.includes("actor") ||
-          o.parent.includes("author") ||
-          o.parent.includes("feed-shared-actor");
-        if (isInAuthorContainer && (o.w || 0) < 100 && (o.h || 0) < 100) {
-          return false;
-        }
-
-        // Skip very small images (likely icons/avatars) - but be more lenient
-        if ((o.w || 0) < 150 && (o.h || 0) < 150) return false;
-
-        // If we've passed all the exclusion filters (not a comment, not a profile pic, has valid src, from LinkedIn CDN, reasonably sized)
-        // then include it - this is the main post image
-        // Additional checks for post content indicators (for extra confidence)
-        const hasPostContentIndicators =
-          o.isInMainPost ||
-          o.classes.includes("w-full") ||
-          o.classes.includes("object-cover") ||
-          o.classes.includes("feed-shared-image") ||
-          o.parent.includes("feed-images") ||
-          o.parent.includes("feed-shared-image") ||
-          o.parent.includes("media") ||
-          o.parent.includes("image") ||
-          o.parentTag === "FIGURE" ||
-          o.alt.includes("graphical") ||
-          o.alt.includes("application") ||
-          o.alt.includes("PowerPoint") ||
-          o.alt.includes("image") ||
-          o.alt.includes("screenshot") ||
-          (o.w || 0) >= 300 ||
-          (o.h || 0) >= 300;
-
-        // Include if it has post content indicators OR if it's reasonably large (likely main post content)
-        // Since we've already excluded comments and profile pics, anything left that's reasonably sized is likely the main post image
-        return (
-          hasPostContentIndicators || (o.w || 0) >= 200 || (o.h || 0) >= 200
-        );
-      })
-      .map((o) => o.src);
-
-    return postImages;
+    return { images: [...new Set(images)] };
   });
+
+  const images = imageResult.images;
 
   // VIDEOS
   // 1) Parse data-sources JSON on <video>
@@ -358,12 +298,33 @@ async function scrapeLinkedInPost(url, liAtCookie = null) {
 
   // Wait for content to appear
   try {
-    await page.waitForSelector("article", { timeout: 10000 });
+    await page.waitForSelector("main", { timeout: 10000 });
   } catch (error) {
     // Continue anyway, might still work
   }
 
   await maybeExpand(page);
+
+  // Scroll multiple times to trigger lazy-loaded images
+  await page.evaluate(() => {
+    window.scrollTo(0, 0);
+  });
+  await page.waitForTimeout(1000);
+  
+  await page.evaluate(() => {
+    window.scrollTo(0, document.body.scrollHeight / 3);
+  });
+  await page.waitForTimeout(1000);
+  
+  await page.evaluate(() => {
+    window.scrollTo(0, document.body.scrollHeight / 2);
+  });
+  await page.waitForTimeout(2000); // Wait for images to load
+  
+  // Try to wait for images to load
+  try {
+    await page.waitForLoadState("networkidle", { timeout: 5000 }).catch(() => {});
+  } catch (e) {}
 
   // Extract
   const result = await extractFromArticle(page);
