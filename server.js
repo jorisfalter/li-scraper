@@ -136,15 +136,25 @@ async function extractFromArticle(page) {
   // IMAGES - Simple approach: filter by URL patterns and size (working version)
   const imageResult = await page.evaluate(() => {
     const images = [];
+    const debug = {
+      totalImages: 0,
+      licdnImages: 0,
+      feedshareImages: 0,
+      allImages: [],
+      filteredOut: [],
+      added: []
+    };
+    
     const mainSection = document.querySelector("main");
 
     if (!mainSection) {
-      return { images: [] };
+      return { images: [], debug: { ...debug, error: "No main section found" } };
     }
 
     const allImages = mainSection.querySelectorAll("img");
+    debug.totalImages = allImages.length;
 
-    allImages.forEach((img) => {
+    allImages.forEach((img, idx) => {
       // Get all possible sources
       const src = img.src || "";
       const dataSrc = img.getAttribute("data-src") || "";
@@ -176,6 +186,30 @@ async function extractFromArticle(page) {
         if (styleHeight > 0) height = styleHeight;
       }
 
+      // Store image info for debugging
+      const imageInfo = {
+        idx: idx + 1,
+        src: bestSrc.substring(0, 150),
+        dataSrc: dataSrc.substring(0, 150),
+        dataLazySrc: dataLazySrc.substring(0, 150),
+        width,
+        height,
+        hasFeedshare: bestSrc.includes("feedshare"),
+        hasMedia: bestSrc.includes("media.licdn.com"),
+        hasLicdn: bestSrc.includes("licdn.com")
+      };
+      
+      debug.allImages.push(imageInfo);
+
+      // Check if from LinkedIn CDN
+      if (bestSrc && bestSrc.includes("licdn.com")) {
+        debug.licdnImages++;
+        
+        if (bestSrc.includes("media.licdn.com") || bestSrc.includes("feedshare")) {
+          debug.feedshareImages++;
+        }
+      }
+
       // Filter criteria:
       const hasFeedshare = bestSrc.includes("feedshare");
       const isFromMedia = bestSrc.includes("media.licdn.com");
@@ -193,13 +227,43 @@ async function extractFromArticle(page) {
         width > 200
       ) {
         images.push(bestSrc);
+        debug.added.push({ src: bestSrc.substring(0, 150), width, height });
+      } else if (bestSrc && bestSrc.includes("licdn.com")) {
+        // Debug why image was filtered out
+        const reasons = [];
+        if (!bestSrc.includes("media.licdn.com") && !bestSrc.includes("feedshare")) reasons.push("not media.licdn.com or feedshare");
+        if (bestSrc.includes("profile-displayphoto")) reasons.push("profile pic");
+        if (bestSrc.includes("displaybackgroundimage")) reasons.push("background");
+        if (bestSrc.includes("/sc/h/") || bestSrc.includes("/aero-v1/sc/h/")) reasons.push("icon");
+        if (bestSrc.includes("comment-image") && height < 300) reasons.push("small comment");
+        if (width <= 200) reasons.push(`too small (${width}px)`);
+        if (reasons.length > 0) {
+          debug.filteredOut.push({ 
+            reason: reasons.join(", "), 
+            src: bestSrc.substring(0, 120),
+            width,
+            height,
+            idx: idx + 1
+          });
+        }
       }
     });
 
-    return { images: [...new Set(images)] };
+    return { images: [...new Set(images)], debug };
   });
 
   const images = imageResult.images;
+  
+  // Log debug info (only in development or if images are empty)
+  if (images.length === 0 || process.env.DEBUG_IMAGES === "true") {
+    console.error(`[SERVER] Total images: ${imageResult.debug.totalImages}, LinkedIn CDN: ${imageResult.debug.licdnImages}, Feedshare/Media: ${imageResult.debug.feedshareImages}, Added: ${images.length}`);
+    if (imageResult.debug.added.length > 0) {
+      console.error(`[SERVER] Added images:`, imageResult.debug.added);
+    }
+    if (imageResult.debug.filteredOut.length > 0 && imageResult.debug.filteredOut.length <= 5) {
+      console.error(`[SERVER] Sample filtered:`, imageResult.debug.filteredOut);
+    }
+  }
 
   // VIDEOS
   // 1) Parse data-sources JSON on <video>
