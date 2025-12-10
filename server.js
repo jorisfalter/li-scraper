@@ -335,7 +335,13 @@ async function extractFromArticle(page) {
     }
     
     if (imageResult.debug.added.length > 0) {
-      console.error(`[SERVER] Added images:`, imageResult.debug.added);
+      console.error(`[SERVER] Added ${imageResult.debug.added.length} image(s):`);
+      imageResult.debug.added.forEach((item, idx) => {
+        console.error(`  ${idx + 1}. ${item.src}... (${item.width}x${item.height})`);
+      });
+    } else if (images.length > 0) {
+      // If images were added but debug.added is empty (shouldn't happen, but just in case)
+      console.error(`[SERVER] Found ${images.length} image(s) but debug info missing`);
     }
     
     // Show all filtered images if we still have 0
