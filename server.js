@@ -136,17 +136,38 @@ async function extractFromArticle(page) {
   // IMAGES - Target actual post content images, not profile pics
   const images = await page.$$eval("article img", (imgs) => {
     const postImages = imgs
-      .map((i) => ({
-        src: i.getAttribute("src") || "",
-        w: Number(i.getAttribute("width") || i.naturalWidth || 0),
-        h: Number(i.getAttribute("height") || i.naturalHeight || 0),
-        classes: i.className || "",
-        alt: i.getAttribute("alt") || "",
-        parent: i.parentElement?.className || "",
-      }))
+      .map((i) => {
+        // Get src, data-src (for lazy loading), or srcset
+        let src = i.getAttribute("src") || i.getAttribute("data-src") || "";
+
+        // If srcset exists, extract the first URL
+        const srcset = i.getAttribute("srcset");
+        if (srcset && !src) {
+          const firstSrc = srcset.split(",")[0]?.trim().split(" ")[0];
+          if (firstSrc) src = firstSrc;
+        }
+
+        return {
+          src: src,
+          w: Number(i.getAttribute("width") || i.naturalWidth || 0),
+          h: Number(i.getAttribute("height") || i.naturalHeight || 0),
+          classes: i.className || "",
+          alt: i.getAttribute("alt") || "",
+          parent: i.parentElement?.className || "",
+          parentTag: i.parentElement?.tagName || "",
+        };
+      })
       .filter((o) => {
-        // Must be from LinkedIn CDN
-        if (!o.src.startsWith("https://media.licdn.com/")) return false;
+        // Must have a valid src
+        if (!o.src) return false;
+
+        // Must be from LinkedIn CDN (check multiple possible domains)
+        const isLinkedInCDN =
+          o.src.startsWith("https://media.licdn.com/") ||
+          o.src.startsWith("https://static.licdn.com/") ||
+          o.src.includes("licdn.com");
+
+        if (!isLinkedInCDN) return false;
 
         // Skip profile pictures (usually small and in specific containers)
         if (o.classes.includes("profile") || o.classes.includes("avatar"))
@@ -154,20 +175,36 @@ async function extractFromArticle(page) {
         if (o.parent.includes("profile") || o.parent.includes("avatar"))
           return false;
 
-        // Skip very small images (likely icons/avatars)
-        if ((o.w || 0) < 200 && (o.h || 0) < 200) return false;
+        // Skip images in author/actor containers (profile pics)
+        const isInAuthorContainer =
+          o.parent.includes("actor") ||
+          o.parent.includes("author") ||
+          o.parent.includes("feed-shared-actor");
+        if (isInAuthorContainer && (o.w || 0) < 100 && (o.h || 0) < 100) {
+          return false;
+        }
 
-        // Look for post content indicators
+        // Skip very small images (likely icons/avatars) - but be more lenient
+        if ((o.w || 0) < 150 && (o.h || 0) < 150) return false;
+
+        // Look for post content indicators (more inclusive)
         const isPostContent =
           o.classes.includes("w-full") ||
           o.classes.includes("object-cover") ||
+          o.classes.includes("feed-shared-image") ||
           o.parent.includes("feed-images") ||
+          o.parent.includes("feed-shared-image") ||
           o.parent.includes("media") ||
+          o.parent.includes("image") ||
+          o.parentTag === "FIGURE" ||
           o.alt.includes("graphical") ||
           o.alt.includes("application") ||
           o.alt.includes("PowerPoint") ||
           o.alt.includes("image") ||
-          o.alt.includes("screenshot");
+          o.alt.includes("screenshot") ||
+          // If it's reasonably large and not in a profile container, include it
+          (o.w || 0) >= 300 ||
+          (o.h || 0) >= 300;
 
         return isPostContent;
       })
@@ -440,7 +477,7 @@ app.post("/scrape/batch", async (req, res) => {
 });
 
 // Start server
-app.listen(PORT, () => {
+app.listen(PORT, "0.0.0.0", () => {
   console.log(`LinkedIn Scraper API running on port ${PORT}`);
   console.log(`Health check: http://localhost:${PORT}/health`);
   console.log(`Scrape endpoint: http://localhost:${PORT}/scrape`);
