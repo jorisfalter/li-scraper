@@ -215,10 +215,13 @@ async function extractFromArticle(page) {
       const isFromMedia = bestSrc.includes("media.licdn.com");
       const isSmallComment = bestSrc.includes("comment-image") && height < 300;
       
+      // Check if this is a potential post image (feedshare or media.licdn.com)
+      const isPotentialPostImage = bestSrc && 
+        bestSrc.includes("licdn.com") && 
+        (isFromMedia || hasFeedshare);
+      
       if (
-        bestSrc &&
-        bestSrc.includes("licdn.com") &&
-        (isFromMedia || hasFeedshare) &&
+        isPotentialPostImage &&
         !bestSrc.includes("profile-displayphoto") &&
         !bestSrc.includes("displaybackgroundimage") &&
         !bestSrc.includes("/sc/h/") &&
@@ -231,19 +234,27 @@ async function extractFromArticle(page) {
       } else if (bestSrc && bestSrc.includes("licdn.com")) {
         // Debug why image was filtered out
         const reasons = [];
-        if (!bestSrc.includes("media.licdn.com") && !bestSrc.includes("feedshare")) reasons.push("not media.licdn.com or feedshare");
-        if (bestSrc.includes("profile-displayphoto")) reasons.push("profile pic");
-        if (bestSrc.includes("displaybackgroundimage")) reasons.push("background");
-        if (bestSrc.includes("/sc/h/") || bestSrc.includes("/aero-v1/sc/h/")) reasons.push("icon");
-        if (bestSrc.includes("comment-image") && height < 300) reasons.push("small comment");
-        if (width <= 200) reasons.push(`too small (${width}px)`);
+        if (isPotentialPostImage) {
+          // This is a feedshare/media image that failed other filters
+          if (bestSrc.includes("profile-displayphoto")) reasons.push("profile pic");
+          if (bestSrc.includes("displaybackgroundimage")) reasons.push("background");
+          if (bestSrc.includes("/sc/h/") || bestSrc.includes("/aero-v1/sc/h/")) reasons.push("icon");
+          if (bestSrc.includes("comment-image") && height < 300 && !hasFeedshare) reasons.push("small comment");
+          if (width <= 200) reasons.push(`too small (${width}px)`);
+        } else {
+          // Not a feedshare/media image
+          reasons.push("not media.licdn.com or feedshare");
+        }
+        
         if (reasons.length > 0) {
           debug.filteredOut.push({ 
             reason: reasons.join(", "), 
             src: bestSrc.substring(0, 120),
             width,
             height,
-            idx: idx + 1
+            idx: idx + 1,
+            isFeedshare: hasFeedshare,
+            isMedia: isFromMedia
           });
         }
       }
@@ -257,11 +268,30 @@ async function extractFromArticle(page) {
   // Log debug info (only in development or if images are empty)
   if (images.length === 0 || process.env.DEBUG_IMAGES === "true") {
     console.error(`[SERVER] Total images: ${imageResult.debug.totalImages}, LinkedIn CDN: ${imageResult.debug.licdnImages}, Feedshare/Media: ${imageResult.debug.feedshareImages}, Added: ${images.length}`);
+    
+    // Show all feedshare/media images that were filtered
+    const filteredFeedshare = imageResult.debug.filteredOut.filter(item => {
+      return item.src.includes("feedshare") || item.src.includes("media.licdn.com");
+    });
+    
+    if (filteredFeedshare.length > 0) {
+      console.error(`[SERVER] Filtered feedshare/media images (${filteredFeedshare.length}):`);
+      filteredFeedshare.forEach((item, idx) => {
+        console.error(`  ${idx + 1}. [${item.idx}] ${item.reason}`);
+        console.error(`     ${item.src}... (${item.width}x${item.height})`);
+      });
+    }
+    
     if (imageResult.debug.added.length > 0) {
       console.error(`[SERVER] Added images:`, imageResult.debug.added);
     }
-    if (imageResult.debug.filteredOut.length > 0 && imageResult.debug.filteredOut.length <= 5) {
-      console.error(`[SERVER] Sample filtered:`, imageResult.debug.filteredOut);
+    
+    // Show all filtered images if we still have 0
+    if (images.length === 0 && imageResult.debug.filteredOut.length > 0) {
+      console.error(`[SERVER] All filtered images (showing first 10):`);
+      imageResult.debug.filteredOut.slice(0, 10).forEach((item, idx) => {
+        console.error(`  ${idx + 1}. [${item.idx}] ${item.reason} - ${item.src.substring(0, 80)}... (${item.width}x${item.height})`);
+      });
     }
   }
 
