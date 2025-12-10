@@ -147,6 +147,44 @@ async function extractFromArticle(page) {
           if (firstSrc) src = firstSrc;
         }
 
+        // Check if image is in a comment section by traversing up the DOM
+        let isInComment = false;
+        let isInMainPost = false;
+        let current = i.parentElement;
+        let depth = 0;
+        while (current && depth < 10) {
+          const className = current.className || "";
+          const id = current.id || "";
+
+          // Check for comment-related classes/IDs
+          if (
+            className.includes("comment") ||
+            className.includes("comments") ||
+            className.includes("commentary") ||
+            className.includes("feed-shared-commentary") ||
+            className.includes("comments-container") ||
+            className.includes("social-actions") ||
+            className.includes("comments-list") ||
+            id.includes("comment")
+          ) {
+            isInComment = true;
+            break;
+          }
+
+          // Check if we're in the main post container
+          if (
+            className.includes("feed-shared-update-v2") ||
+            className.includes("feed-shared-update") ||
+            className.includes("main-feed-activity-card") ||
+            className.includes("feed-shared-image")
+          ) {
+            isInMainPost = true;
+          }
+
+          current = current.parentElement;
+          depth++;
+        }
+
         return {
           src: src,
           w: Number(i.getAttribute("width") || i.naturalWidth || 0),
@@ -155,9 +193,13 @@ async function extractFromArticle(page) {
           alt: i.getAttribute("alt") || "",
           parent: i.parentElement?.className || "",
           parentTag: i.parentElement?.tagName || "",
+          isInComment: isInComment,
+          isInMainPost: isInMainPost,
         };
       })
       .filter((o) => {
+        // Exclude comment images first
+        if (o.isInComment) return false;
         // Must have a valid src
         if (!o.src) return false;
 
@@ -188,7 +230,9 @@ async function extractFromArticle(page) {
         if ((o.w || 0) < 150 && (o.h || 0) < 150) return false;
 
         // Look for post content indicators (more inclusive)
+        // Prioritize images in the main post container
         const isPostContent =
+          o.isInMainPost || // If in main post container, include it
           o.classes.includes("w-full") ||
           o.classes.includes("object-cover") ||
           o.classes.includes("feed-shared-image") ||
