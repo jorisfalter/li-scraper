@@ -218,59 +218,40 @@ async function extractFromArticle(page) {
         }
       }
 
-      // Filter criteria:
+      // Filter criteria (matching scraper.js exactly):
       const hasFeedshare = bestSrc.includes("feedshare");
       const isFromMedia = bestSrc.includes("media.licdn.com");
       const isSmallComment = bestSrc.includes("comment-image") && height < 300;
-      const isProfilePic = bestSrc.includes("profile-displayphoto");
-      const isCompanyLogo = bestSrc.includes("company-logo");
-      
-      // Check if this is a potential post image (feedshare OR media.licdn.com)
-      // When logged out, post images may not have "feedshare" in URL
-      const isPotentialPostImage = bestSrc && 
-        bestSrc.includes("licdn.com") && 
-        (isFromMedia || hasFeedshare);
-      
-      // For feedshare images, accept even if dimensions aren't loaded yet (they're lazy-loaded)
-      // For other images, require width > 200
-      const hasValidDimensions = hasFeedshare ? (width === 0 || width > 200) : width > 200;
       
       if (
-        isPotentialPostImage &&
-        !isProfilePic &&
+        bestSrc &&
+        bestSrc.includes("licdn.com") &&
+        (isFromMedia || hasFeedshare) &&
+        !bestSrc.includes("profile-displayphoto") &&
         !bestSrc.includes("displaybackgroundimage") &&
         !bestSrc.includes("/sc/h/") &&
         !bestSrc.includes("/aero-v1/sc/h/") &&
-        !isCompanyLogo &&
         !(isSmallComment && !hasFeedshare) &&
-        hasValidDimensions
+        width > 200
       ) {
         images.push(bestSrc);
         debug.added.push({ src: bestSrc.substring(0, 150), width, height });
       } else if (bestSrc && bestSrc.includes("licdn.com")) {
-        // Debug why image was filtered out
+        // Debug why image was filtered out (matching scraper.js)
         const reasons = [];
-        if (isPotentialPostImage) {
-          // This is a feedshare/media image that failed other filters
-          if (bestSrc.includes("profile-displayphoto")) reasons.push("profile pic");
-          if (bestSrc.includes("displaybackgroundimage")) reasons.push("background");
-          if (bestSrc.includes("/sc/h/") || bestSrc.includes("/aero-v1/sc/h/")) reasons.push("icon");
-          if (bestSrc.includes("comment-image") && height < 300 && !hasFeedshare) reasons.push("small comment");
-          if (width <= 200) reasons.push(`too small (${width}px)`);
-        } else {
-          // Not a feedshare/media image
-          reasons.push("not media.licdn.com or feedshare");
-        }
-        
+        if (!bestSrc.includes("media.licdn.com") && !bestSrc.includes("feedshare")) reasons.push("not media.licdn.com or feedshare");
+        if (bestSrc.includes("profile-displayphoto")) reasons.push("profile pic");
+        if (bestSrc.includes("displaybackgroundimage")) reasons.push("background");
+        if (bestSrc.includes("/sc/h/") || bestSrc.includes("/aero-v1/sc/h/")) reasons.push("icon");
+        if (bestSrc.includes("comment-image") && height < 300) reasons.push("small comment");
+        if (width <= 200) reasons.push(`too small (${width}px)`);
         if (reasons.length > 0) {
           debug.filteredOut.push({ 
             reason: reasons.join(", "), 
             src: bestSrc.substring(0, 120),
             width,
             height,
-            idx: idx + 1,
-            isFeedshare: hasFeedshare,
-            isMedia: isFromMedia
+            idx: idx + 1
           });
         }
       }
