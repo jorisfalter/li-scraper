@@ -162,7 +162,15 @@ async function extractFromArticle(page) {
       const srcset = img.getAttribute("srcset") || "";
       
       // Try to get the best source URL
-      let bestSrc = src || dataSrc || dataLazySrc || "";
+      // Prioritize data-src if it has "feedshare" (lazy-loaded post images)
+      let bestSrc = "";
+      if (dataSrc && dataSrc.includes("feedshare")) {
+        bestSrc = dataSrc;
+      } else if (dataLazySrc && dataLazySrc.includes("feedshare")) {
+        bestSrc = dataLazySrc;
+      } else {
+        bestSrc = src || dataSrc || dataLazySrc || "";
+      }
       
       // Handle srcset if no other source
       if (!bestSrc && srcset) {
@@ -214,20 +222,28 @@ async function extractFromArticle(page) {
       const hasFeedshare = bestSrc.includes("feedshare");
       const isFromMedia = bestSrc.includes("media.licdn.com");
       const isSmallComment = bestSrc.includes("comment-image") && height < 300;
+      const isProfilePic = bestSrc.includes("profile-displayphoto");
+      const isCompanyLogo = bestSrc.includes("company-logo");
       
-      // Check if this is a potential post image (feedshare or media.licdn.com)
+      // Check if this is a potential post image (feedshare OR media.licdn.com)
+      // When logged out, post images may not have "feedshare" in URL
       const isPotentialPostImage = bestSrc && 
         bestSrc.includes("licdn.com") && 
         (isFromMedia || hasFeedshare);
       
+      // For feedshare images, accept even if dimensions aren't loaded yet (they're lazy-loaded)
+      // For other images, require width > 200
+      const hasValidDimensions = hasFeedshare ? (width === 0 || width > 200) : width > 200;
+      
       if (
         isPotentialPostImage &&
-        !bestSrc.includes("profile-displayphoto") &&
+        !isProfilePic &&
         !bestSrc.includes("displaybackgroundimage") &&
         !bestSrc.includes("/sc/h/") &&
         !bestSrc.includes("/aero-v1/sc/h/") &&
+        !isCompanyLogo &&
         !(isSmallComment && !hasFeedshare) &&
-        width > 200
+        hasValidDimensions
       ) {
         images.push(bestSrc);
         debug.added.push({ src: bestSrc.substring(0, 150), width, height });
@@ -439,19 +455,35 @@ async function scrapeLinkedInPost(url, liAtCookie = null) {
   await page.evaluate(() => {
     window.scrollTo(0, 0);
   });
-  await page.waitForTimeout(1000);
+  await page.waitForTimeout(1500);
+  
+  await page.evaluate(() => {
+    window.scrollTo(0, document.body.scrollHeight / 4);
+  });
+  await page.waitForTimeout(1500);
   
   await page.evaluate(() => {
     window.scrollTo(0, document.body.scrollHeight / 3);
   });
-  await page.waitForTimeout(1000);
+  await page.waitForTimeout(1500);
   
   await page.evaluate(() => {
     window.scrollTo(0, document.body.scrollHeight / 2);
   });
-  await page.waitForTimeout(2000); // Wait for images to load
+  await page.waitForTimeout(3000); // Wait longer for images to load
   
-  // Try to wait for images to load
+  // Scroll back up a bit to ensure all images are in viewport
+  await page.evaluate(() => {
+    window.scrollTo(0, document.body.scrollHeight / 4);
+  });
+  await page.waitForTimeout(2000);
+  
+  // Try to wait for images with feedshare to load
+  try {
+    await page.waitForSelector('img[src*="feedshare"], img[data-src*="feedshare"]', { timeout: 5000 }).catch(() => {});
+  } catch (e) {}
+  
+  // Try to wait for network to settle
   try {
     await page.waitForLoadState("networkidle", { timeout: 5000 }).catch(() => {});
   } catch (e) {}
